@@ -31,7 +31,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Define the isolated path to analyze
-    CLIENT_METRO_NAME = "Dallas"  # This is the client metro we want to analyze (e.g., "Seattle")
+    CLIENT_METRO_NAME = "Houston"  # This is the client metro we want to analyze (e.g., "Seattle")
     EDGE_METRO_CODE = "DFW" # This is the edge metro we want to analyze (e.g., "SEA")
     EDGE_METRO_NAME = "Dallas" # This is the edge metro we want to analyze (e.g., "Dallas")
     PARENT_METRO_NAME = "Dallas" # This is the parent metro we want to analyze (e.g., "Dallas")
@@ -39,7 +39,7 @@ def main():
     print(f"Initializing Pairwise Analysis: {CLIENT_METRO_NAME} -> {EDGE_METRO_NAME} -> {PARENT_METRO_NAME}")
 
     # 2. Topology & Data Access Clients
-    name_to_id, id_to_name = load_metro_maps(config.metro_areas_csv)
+    name_to_id, id_to_name, name_to_airport = load_metro_maps(config.metro_areas_csv)
     resolver = MetroResolver(name_to_id, id_to_name)
     db_client = SQLiteClient(config.db_path)
 

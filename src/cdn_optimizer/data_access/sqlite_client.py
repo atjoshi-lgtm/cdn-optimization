@@ -109,3 +109,37 @@ class SQLiteClient:
         """
         context = f"Parent TAT (Parent assigned to Edge: {metro_name})"
         return self._fetch_pdf(query, (metro_name,), context)
+    
+    def get_active_parent_for_edge(self, edge_metro_name: str) -> str:
+        """
+        Dynamically determine the assigned parent (MCH) metro for an edge metro
+        by finding which parent handled the highest volume of midgress requests.
+        
+        Args:
+            edge_metro_name: The name of the edge/child metro (e.g., 'Houston').
+            
+        Returns:
+            The name of the parent metro (e.g., 'Dallas').
+            
+        Raises:
+            MissingDataError: If no midgress data exists for this edge metro.
+        """
+        query = f"""
+            SELECT parent_metro, SUM(total_requests) as total_vol
+            FROM netopt_perf_midgress_rtt_ansabni
+            WHERE child_metro = ?
+            AND pdate IN {self.default_dates}
+            GROUP BY parent_metro
+            ORDER BY total_vol DESC
+            LIMIT 1
+        """
+        
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, (edge_metro_name,))
+            row = cursor.fetchone()
+            
+        if not row:
+            raise MissingDataError(f"Could not determine active parent for edge: {edge_metro_name}")
+            
+        return row[0]
