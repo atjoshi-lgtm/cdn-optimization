@@ -229,3 +229,5 @@ PERF/
 SERVEDFROM_DATA/*
 SERVEDFROM_DATA/served_from.csv
 figures/*
+# **/*.txt
+data/

@@ -16,3 +16,26 @@ This repository has been explicitly architected to enforce strict separation of 
 ## Core Directives for Generating Code
 - **Minimalism**: Write minimal, robust code. Do not add bloated `try/except` wrappers unless handling a highly specific, expected failure.
 - **Data Encapsulation**: Never pass a file path to a `models/` class. Pass the loaded data structure.
+
+## Codebase Structure & Context Guide
+
+If you are tasked with debugging or extending this codebase, use the following map to find the relevant context. Do not guess; read the docs.
+
+### 1. Domain Theory & Mathematics (`docs/theory/`)
+Before touching the codebase, ensure you understand the math:
+* **`terms_and_examples.md`**: Defines CDN-specific jargon (e.g., ASN Metro vs. BW Metro). Read this if you are confused about traffic routing variables.
+* **`mathematical_formulation.md`**: The absolute source of truth for the physics engine and optimization objective. Read this if you are debugging convolutions, cost scaling, or TTFB outputs.
+* **`perf_model_and_fd.md`**: Explains the conceptual split between Cache Efficiency (FD) and Latency Physics.
+
+### 2. Software Architecture (`docs/`)
+If you need to know how the math is implemented in Python, refer to:
+* **`models_probability.md`**: Explains the `PdfBucket` ingestion vs. `pandas.Series` transformation logic.
+* **`models_footprint.md`**: Explains the tie-breaking and plateau-flattening algorithms for cache efficiency.
+* **`models_latency_path.md`**: Explains the finite mixture model for TTFB.
+* **`data_access_sqlite.md` & `data_access_fds_loader.md`**: Explains the strict "Fail Fast" file I/O and database boundaries.
+* **`core_and_topology.md`**: Explains how string names map to network IDs.
+
+### 3. Debugging Protocol
+1. Identify the layer where the bug occurs (Data Access, Topology, or Math Models).
+2. Read the corresponding architectural doc.
+3. If the bug involves a mathematical calculation, cross-reference the Python code with `docs/theory/mathematical_formulation.md`.
