@@ -217,4 +217,15 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-.DS_Store
+# Standard Python gitignore
+**/*.pyc
+**/__pycache__/
+**/*.png
+**/*.db
+PERF/
+**/*.csv
+**/*.log
+**/.DS_Store
+SERVEDFROM_DATA/*
+SERVEDFROM_DATA/served_from.csv
+figures/*

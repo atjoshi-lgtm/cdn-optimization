@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cdn-optimization"
+version = "0.1.0"
+description = "CDN Latency and Disk Allocation Optimizer"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "matplotlib>=3.7.0",
+    "pyyaml>=6.0"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
