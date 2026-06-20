@@ -46,6 +46,9 @@ This document tracks the ongoing migration from the legacy, monolithic script-ba
   * Segregated the parsing of `metro_areas.csv` into a dedicated topological mapping layer.
   * **Update**: Expanded `csv_parser.py` and `network_map.py` to support bidirectional mapping (Name $\leftrightarrow$ ID) to replace the old `client_metro_ids` and `client_metros` global dictionaries.
   * **Bugfix (SQLite Parsing)**: Moved the regex parsing logic (`rtt_0_5_ms`, etc.) out of the mathematical `ProbabilityDensityFunction` class and into `sqlite_client.py`. This ensures the database schema logic is fully contained within the data layer, passing clean `PdfBucket` instances into the mathematical models.
+  * **Feature (Dynamic Topography)**: Added `get_active_parent_for_edge` to `sqlite_client.py`. It dynamically derives parent-child MCH relationships by aggregating `total_requests` from the `netopt_perf_midgress_rtt_ansabni` table, eliminating the need for hardcoded parent mappings.
+  * **Bugfix (Data-Join Mismatch)**: Updated `csv_parser.py` to extract `airport_code` from column 4 of `metro_areas.csv`. This provides a crucial translation layer between the SQLite database (which logs by City Name) and the File System (which names FDS files by Airport Code).d
+  * **Feature (Traffic Matrix Filter)**: Implemented parsing of `served_from.csv` to map $(u,m)$ traffic volumes. Integrated the `_TRAFFIC_THRESHOLD` parameter ($\theta$) into `discover_analyzable_paths.py` to filter out negligible traffic and expose only the mathematically significant topological relationships.
 
 ### 5. Configuration Management
 * **Old Implementation:** Hardcoded globals scattered across `analyse.py`, `solve_for_US.py`, and `example_4.py`.
@@ -61,3 +64,8 @@ This document tracks the ongoing migration from the legacy, monolithic script-ba
 * **Changes:**
   * Script now solely acts as the orchestrator. It loads config, uses `data_access` clients to fetch pure mathematical objects, passes them to `models`, and handles the visual output.
   * Explicitly imports `matplotlib` and `csv` here, confirming that no side-effect libraries have polluted the mathematical and data layers.
+
+### 7. Utility Scripts
+* **New File:** `scripts/discover_analyzable_paths.py`
+* **Purpose:** A diagnostic tool that intersects the SQLite database records, the CSV topology mappings, and the FDS file system to dynamically discover which pairwise routing paths contain sufficient data for analysis.
+* **Update**: Enhanced `discover_analyzable_paths.py` to dynamically resolve and cache the active parent metro for each edge using the `SQLiteClient`. Changed the output mechanism from standard console printing to generating a structured `analyzable_paths.json` file for easier programmatic and manual consumption.

@@ -63,7 +63,7 @@ class SQLiteClient:
         # Normalize the PDF so the total mass equals 1.0 (retaining legacy behavior)
         total = float(pdf.probability_series.sum())
         if total > 0:
-            pdf._probability_series /= total
+            pdf._probability_series /= total # type: ignore
             
         return pdf
 

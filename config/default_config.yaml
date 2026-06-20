@@ -2,7 +2,10 @@
 # Core settings for the CDN Optimizer
 
 bucket: "AkamaiHD"
+traffic_threshold_mbps: 20000.0
+
 data_paths:
   db_path: "data/PERF/perf_data.db"
   metro_areas_csv: "data/PERF/metro_areas_original.csv"
   fds_dir: "data/FDS_{bucket}"
+  served_from_csv: "data/SERVEDFROM_DATA/served_from_{bucket}.csv"

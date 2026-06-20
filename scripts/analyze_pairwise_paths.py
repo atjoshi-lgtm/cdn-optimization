@@ -1,7 +1,7 @@
 """
 analyze_pairwise_paths.py
 
-Analyzes the physical latency path for a specific Client -> Edge -> Parent route.
+Analyzes the physical latency path for Client -> Edge -> Parent routes.
 Evaluates how the cache disk size at the Edge impacts the TTFB p50 and p95.
 
 This script acts as the "glue" layer, connecting data access, topology, and math models,
@@ -9,11 +9,13 @@ and is the ONLY place where visualization (matplotlib) and CSV writing occur.
 """
 
 import csv
+import json
 from pathlib import Path
 import matplotlib.pyplot as plt
 
 from cdn_optimizer.core.config_loader import load_config
 from cdn_optimizer.data_access.csv_parser import load_metro_maps
+from cdn_optimizer.core.exceptions import MissingDataError
 from cdn_optimizer.topology.network_map import MetroResolver
 from cdn_optimizer.data_access.sqlite_client import SQLiteClient
 from cdn_optimizer.data_access.fds_loader import load_footprint_descriptor
@@ -24,49 +26,46 @@ TB_IN_MB = 1024 * 1024
 DISK_STEP_TB = 100.0
 
 
-def main():
-    # 1. Configuration & Setup
-    config = load_config()
-    output_dir = Path("latency_vs_cache_size_pairwise")
-    output_dir.mkdir(parents=True, exist_ok=True)
+def _slug(value: str) -> str:
+    return value.replace(" ", "_")
 
-    # Define the isolated path to analyze
-    CLIENT_METRO_NAME = "Houston"  # This is the client metro we want to analyze (e.g., "Seattle")
-    EDGE_METRO_CODE = "DFW" # This is the edge metro we want to analyze (e.g., "SEA")
-    EDGE_METRO_NAME = "Dallas" # This is the edge metro we want to analyze (e.g., "Dallas")
-    PARENT_METRO_NAME = "Dallas" # This is the parent metro we want to analyze (e.g., "Dallas")
 
-    print(f"Initializing Pairwise Analysis: {CLIENT_METRO_NAME} -> {EDGE_METRO_NAME} -> {PARENT_METRO_NAME}")
+def analyze_pairwise_path(
+    client_metro_name: str,
+    edge_metro_code: str,
+    edge_metro_name: str,
+    parent_metro_name: str,
+    resolver: MetroResolver,
+    db_client: SQLiteClient,
+    config,
+    output_dir: Path,
+) -> bool:
+    print(f"Initializing Pairwise Analysis: {client_metro_name} -> {edge_metro_name} -> {parent_metro_name}")
 
-    # 2. Topology & Data Access Clients
-    name_to_id, id_to_name, name_to_airport = load_metro_maps(config.metro_areas_csv)
-    resolver = MetroResolver(name_to_id, id_to_name)
-    db_client = SQLiteClient(config.db_path)
-
-    # 3. Load the Footprint Descriptor (Cache Efficiency Curve)
-    fds_path = config.fds_dir / f"{EDGE_METRO_CODE.lower()}.txt"
+    # 1. Load the Footprint Descriptor (Cache Efficiency Curve)
+    fds_path = config.fds_dir / f"{edge_metro_code.lower()}.txt"
     descriptor = load_footprint_descriptor(fds_path)
 
-    # 4. Fetch the Physical Latency PDFs from the Database
-    client_id = resolver.get_id(CLIENT_METRO_NAME)
-    
-    edge_rtt_pdf = db_client.get_edge_rtt_pdf(EDGE_METRO_NAME, client_id)
-    edge_tat_pdf = db_client.get_edge_tat_pdf(EDGE_METRO_NAME, cache_hit_type=1)
-    midgress_rtt_pdf = db_client.get_midgress_rtt_pdf(PARENT_METRO_NAME, EDGE_METRO_NAME)
-    parent_tat_pdf = db_client.get_parent_tat_pdf(PARENT_METRO_NAME)
+    # 2. Fetch the Physical Latency PDFs from the Database
+    client_id = resolver.get_id(client_metro_name)
 
-    # 5. Initialize the Latency Physics Model
+    edge_rtt_pdf = db_client.get_edge_rtt_pdf(edge_metro_name, client_id)
+    edge_tat_pdf = db_client.get_edge_tat_pdf(edge_metro_name, cache_hit_type=1)
+    midgress_rtt_pdf = db_client.get_midgress_rtt_pdf(parent_metro_name, edge_metro_name)
+    parent_tat_pdf = db_client.get_parent_tat_pdf(parent_metro_name)
+
+    # 3. Initialize the Latency Physics Model
     latency_model = PairwiseLatencyModel(
         edge_rtt_pdf=edge_rtt_pdf,
         edge_tat_hit_pdf=edge_tat_pdf,
         midgress_rtt_pdf=midgress_rtt_pdf,
-        parent_tat_pdf=parent_tat_pdf
+        parent_tat_pdf=parent_tat_pdf,
     )
 
-    # 6. Computation Sweep
+    # 4. Computation Sweep
     min_disk_mb = min(p.cache_space for p in descriptor._points_sorted_by_cache)
     max_disk_mb = max(p.cache_space for p in descriptor._points_sorted_by_cache)
-    
+
     results = []
     current_disk_mb = min_disk_mb
     step_mb = DISK_STEP_TB * TB_IN_MB
@@ -90,20 +89,22 @@ def main():
             "disk_tb": current_disk_mb / TB_IN_MB,
             "hitrate_percent": hitrate_percent,
             "p50_ms": p50_ms,
-            "p95_ms": p95_ms
+            "p95_ms": p95_ms,
         })
-        
+
         current_disk_mb += step_mb
 
-    # 7. Output: Write CSV
-    csv_filename = output_dir / f"pairwise_{CLIENT_METRO_NAME}_to_{EDGE_METRO_NAME}.csv"
+    # 5. Output: Write CSV
+    csv_filename = output_dir / (
+        f"pairwise_{_slug(client_metro_name)}_to_{_slug(edge_metro_name)}_via_{_slug(parent_metro_name)}.csv"
+    )
     with open(csv_filename, mode='w', newline='') as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=["disk_tb", "hitrate_percent", "p50_ms", "p95_ms"])
         writer.writeheader()
         writer.writerows(results)
     print(f"Data saved to {csv_filename}")
 
-    # 8. Output: Visualization
+    # 6. Output: Visualization
     disk_tb_vals = [r["disk_tb"] for r in results]
     hitrate_vals = [r["hitrate_percent"] for r in results]
     p50_vals = [r["p50_ms"] for r in results]
@@ -113,7 +114,7 @@ def main():
 
     # Plot 1: Disk vs Hitrate
     ax1.plot(disk_tb_vals, hitrate_vals, color='blue', marker='.', linestyle='-')
-    ax1.set_title(f"Cache Efficiency: {EDGE_METRO_NAME}")
+    ax1.set_title(f"Cache Efficiency: {edge_metro_name}")
     ax1.set_xlabel("Provisioned Disk (TB)")
     ax1.set_ylabel("Hitrate (%)")
     ax1.grid(True, linestyle="--", alpha=0.6)
@@ -121,16 +122,77 @@ def main():
     # Plot 2: Disk vs Latency
     ax2.plot(disk_tb_vals, p50_vals, color='green', marker='.', linestyle='-', label='p50 TTFB')
     ax2.plot(disk_tb_vals, p95_vals, color='red', marker='.', linestyle='-', label='p95 TTFB')
-    ax2.set_title(f"Client Latency: {CLIENT_METRO_NAME} -> {EDGE_METRO_NAME}")
+    ax2.set_title(f"Client Latency: {client_metro_name} -> {edge_metro_name}")
     ax2.set_xlabel("Provisioned Disk (TB)")
     ax2.set_ylabel("Latency (ms)")
     ax2.legend()
     ax2.grid(True, linestyle="--", alpha=0.6)
 
     plt.tight_layout()
-    plot_filename = output_dir / f"pairwise_plot_{CLIENT_METRO_NAME}_to_{EDGE_METRO_NAME}.png"
+    plot_filename = output_dir / (
+        f"pairwise_plot_{_slug(client_metro_name)}_to_{_slug(edge_metro_name)}_via_{_slug(parent_metro_name)}.png"
+    )
     plt.savefig(plot_filename, dpi=150)
+    plt.close(fig)
     print(f"Plot saved to {plot_filename}")
+    return True
+
+
+def _parse_edge_key(edge_key: str) -> tuple[str, str]:
+    edge_name, edge_code_with_paren = edge_key.rsplit("(", 1)
+    return edge_name.strip(), edge_code_with_paren.rstrip(")").strip()
+
+
+def main():
+    # 1. Configuration & Setup
+    config = load_config()
+    output_dir = Path("latency_vs_cache_size_pairwise")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # 2. Topology & Data Access Clients
+    name_to_id, id_to_name, name_to_airport = load_metro_maps(config.metro_areas_csv)
+    resolver = MetroResolver(name_to_id, id_to_name)
+    db_client = SQLiteClient(config.db_path)
+
+    # 3. Load all analyzable Client -> Edge -> Parent routes
+    analyzable_paths_file = Path("data/analyzable_paths.json")
+    with analyzable_paths_file.open("r", encoding="utf-8") as f:
+        paths_by_edge = json.load(f)
+
+    total_paths = 0
+    successful_paths = 0
+
+    # 4. Iterate over all route combinations and analyze each one
+    for edge_key, edge_data in paths_by_edge.items():
+        edge_metro_name, edge_metro_code = _parse_edge_key(edge_key)
+        parent_metro_name = edge_data.get("active_parent", "UNKNOWN")
+
+        if parent_metro_name == "UNKNOWN":
+            print(f"Skipping {edge_key}: parent metro is UNKNOWN")
+            continue
+
+        for client_info in edge_data.get("serves_clients", []):
+            client_metro_name = client_info["client_name"]
+            total_paths += 1
+
+            try:
+                if analyze_pairwise_path(
+                    client_metro_name=client_metro_name,
+                    edge_metro_code=edge_metro_code,
+                    edge_metro_name=edge_metro_name,
+                    parent_metro_name=parent_metro_name,
+                    resolver=resolver,
+                    db_client=db_client,
+                    config=config,
+                    output_dir=output_dir,
+                ):
+                    successful_paths += 1
+            except (MissingDataError, ValueError, FileNotFoundError) as e:
+                print(
+                    f"Skipping path {client_metro_name} -> {edge_metro_name} -> {parent_metro_name}: {e}"
+                )
+
+    print(f"Completed pairwise analysis for {successful_paths}/{total_paths} paths.")
 
 
 if __name__ == "__main__":
