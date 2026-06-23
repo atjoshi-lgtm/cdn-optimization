@@ -4,15 +4,32 @@ This module is responsible for calculating the Time-To-First-Byte (TTFB) distrib
 
 ## Core Concepts
 - **`PairwiseLatencyModel`**: Replaces the legacy `MetroPerformanceWithMCH` and `MCHPerformanceModel` classes. It evaluates a single, isolated path: `Client -> Edge -> Parent`.
-- **The Mixture Model**: It calculates TTFB by convolving the base PDFs into a "Pure Hit Path" and a "Pure Miss Path", and then merging them into a single distribution using `weighted_pdf_sum` based on the provided cache hit rate.
+- **The Mixture Model**: It calculates TTFB using three convolved paths and merges them with `weighted_pdf_sum`.
+	- Path 1 (Edge Hit): `Edge RTT + Edge Hit TAT`, weight $h_e$
+	- Path 2 (Parent Hit): `Edge RTT + Midgress RTT + Parent Hit TAT`, weight $(1-h_e)h_p$
+	- Path 3 (Parent Miss): `Edge RTT + Midgress RTT + Parent Miss TAT`, weight $(1-h_e)(1-h_p)$
+	- The model validates that path weights sum to $1.0$.
+
+## Hit-Rate Semantics
+- `edge_hitrate_percentage` is the unconditional edge hit rate.
+- `parent_hitrate_percentage` is interpreted as the parent hit rate **conditioned on edge misses**.
+- The resulting mixture weights are:
+  - $w_{\rm edge\ hit} = h_e$
+  - $w_{\rm parent\ hit} = (1-h_e)h_p$
+  - $w_{\rm parent\ miss} = (1-h_e)(1-h_p)$
+- Operational implication: when edge hit rate approaches $100\%$, parent hit rate has negligible or zero effect on final TTFB because the parent branches are weighted by $(1-h_e)$.
+
+## Script Integration Notes
+- `scripts/analyze_pairwise_paths.py` derives edge and parent hit rates from footprint descriptors and effective parent capacity assumptions.
+- `scripts/analyze_pairwise_hitrate_heatmaps.py` bypasses footprint descriptors entirely and directly sweeps explicit edge/parent hit-rate inputs over a 2D grid to generate p50/p95 heatmaps for each analyzable `Client -> Edge -> Parent` path.
 
 ## Agent Rules
 - **Fail Fast**: The legacy code used `_create_dummy_pdf()` to silently inject fake data if a database query failed. **This is strictly forbidden.** If a PDF is empty, the model must raise a `ValueError` immediately. Missing data must be handled at the `data_access` layer, never masked by the mathematical models.
 
 ## Detailed Explanation of the Physics
-In our mathematical model, predicting the Time-To-First-Byte (TTFB) requires breaking a network request down into its physical, temporal components. These four properties represent the probability distributions (PDFs) of time spent at each step of the journey.
+In our mathematical model, predicting the Time-To-First-Byte (TTFB) requires breaking a network request down into its physical, temporal components. These five properties represent the probability distributions (PDFs) of time spent at each step of the journey.
 
-Here is the breakdown of the four fundamental physical properties defining a pairwise routing path:
+Here is the breakdown of the five fundamental physical properties defining a pairwise routing path:
 
 ### 1. Edge RTT (`edge_rtt_pdf` / $R^{\rm edge}_{u,m}$)
 
@@ -30,18 +47,24 @@ Here is the breakdown of the four fundamental physical properties defining a pai
 * **What it is:** The network latency incurred when a request misses at the edge and must go upstream to the parent/MCH metro.
 * **The Physics:** If the edge server does not have the file, it must ask the larger regional parent cache. This is the transit time across the CDN's internal backbone connecting the edge city to the parent city (e.g., from an edge in Seattle to a parent cache in Los Angeles).
 
-### 4. Parent TAT (`parent_tat_pdf` / $A_m^{\rm mch}$)
+### 4. Parent Hit TAT (`parent_tat_hit_pdf` / $A_{m,\mathrm{hit}}^{\rm mch}$)
 
-* **What it is:** The upstream service-time distribution at the parent tier.
-* **The Physics:** Just like the Edge TAT, this is the hardware processing time, but at the parent data center. It is the time the parent server spends looking up the object in its massive storage arrays and writing it to the outbound socket back to the edge.
+* **What it is:** The upstream service-time distribution at the parent tier when the parent cache hits.
+* **The Physics:** This captures parent processing time when the object is found at the parent layer.
+
+### 5. Parent Miss TAT (`parent_tat_miss_pdf` / $A_{m,\mathrm{miss}}^{\rm mch}$)
+
+* **What it is:** The upstream service-time distribution at the parent tier when the parent cache misses.
+* **The Physics:** This captures parent processing time on misses, which can differ from parent-hit behavior due to different backend handling.
 
 ---
 
 ### The Big Picture: Combining the Physics
 
-By using the mathematical convolution class (`Convolution`), we add these independent random variables together to simulate the two possible realities a request can face:
+By using the mathematical convolution class (`Convolution`), we add these independent random variables together to simulate the three possible realities a request can face:
 
-* **The Cache Hit Reality:** Edge RTT + Edge TAT
-* **The Cache Miss Reality:** Edge RTT + Midgress RTT + Parent TAT
+* **The Edge Hit Reality:** Edge RTT + Edge Hit TAT
+* **The Parent Hit Reality:** Edge RTT + Midgress RTT + Parent Hit TAT
+* **The Parent Miss Reality:** Edge RTT + Midgress RTT + Parent Miss TAT
 
-We then mix these two realities together based on the expected cache hit rate to get the final, user-perceived TTFB.
+We then mix these three realities together based on edge and parent hit rates to get the final, user-perceived TTFB.

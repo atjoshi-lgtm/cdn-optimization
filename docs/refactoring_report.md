@@ -32,6 +32,12 @@ This document tracks the ongoing migration from the legacy, monolithic script-ba
 * **Changes:**
   * Collapsed the confusing and coupled `MetroPerformanceWithMCH` and `MCHPerformanceModel` into a single, elegant `PairwiseLatencyModel`.
   * Removed `_create_dummy_pdf()` which silently masked database failures. The model now strictly enforces valid input PDFs.
+  * **Update (3-Path TTFB):** Upgraded from a 2-path hit/miss mixture to a 3-path model with explicit parent-hit and parent-miss branches.
+  * **API Update:** `PairwiseLatencyModel.__init__` now accepts `parent_tat_hit_pdf` and `parent_tat_miss_pdf` separately.
+  * **API Update:** `get_ttfb_pdf` now accepts `edge_hitrate_percentage` and `parent_hitrate_percentage` with weights:
+    * $w_1 = h_e$
+    * $w_2 = (1-h_e)h_p$
+    * $w_3 = (1-h_e)(1-h_p)$
 
 ### 4. Database Access & Topography (The Monolith)
 * **Old File:** `analyse.py`
@@ -49,6 +55,10 @@ This document tracks the ongoing migration from the legacy, monolithic script-ba
   * **Feature (Dynamic Topography)**: Added `get_active_parent_for_edge` to `sqlite_client.py`. It dynamically derives parent-child MCH relationships by aggregating `total_requests` from the `netopt_perf_midgress_rtt_ansabni` table, eliminating the need for hardcoded parent mappings.
   * **Bugfix (Data-Join Mismatch)**: Updated `csv_parser.py` to extract `airport_code` from column 4 of `metro_areas.csv`. This provides a crucial translation layer between the SQLite database (which logs by City Name) and the File System (which names FDS files by Airport Code).d
   * **Feature (Traffic Matrix Filter)**: Implemented parsing of `served_from.csv` to map $(u,m)$ traffic volumes. Integrated the `_TRAFFIC_THRESHOLD` parameter ($\theta$) into `discover_analyzable_paths.py` to filter out negligible traffic and expose only the mathematically significant topological relationships.
+  * **Update (Parent TAT Querying):** Extended `get_parent_tat_pdf` with optional `cache_hit_type`.
+    * `None`: preserves legacy behavior (`cache_hit_type != 2`).
+    * `1`: parent-hit TAT only.
+    * `0`: parent-miss TAT only.
 
 ### 5. Configuration Management
 * **Old Implementation:** Hardcoded globals scattered across `analyse.py`, `solve_for_US.py`, and `example_4.py`.
@@ -64,6 +74,28 @@ This document tracks the ongoing migration from the legacy, monolithic script-ba
 * **Changes:**
   * Script now solely acts as the orchestrator. It loads config, uses `data_access` clients to fetch pure mathematical objects, passes them to `models`, and handles the visual output.
   * Explicitly imports `matplotlib` and `csv` here, confirming that no side-effect libraries have polluted the mathematical and data layers.
+  * **Update (Parent Hit/Miss Inputs):** Fetches parent TAT PDFs separately via `cache_hit_type=1` (hit) and `cache_hit_type=0` (miss).
+  * **Update (Perfect Exclusion):** Adds constants `PARENT_DISK_TB` and `EDGE_TRAFFIC_SHARE`, then computes:
+    * `effective_parent_mb = (PARENT_DISK_TB * 1024 * 1024) * EDGE_TRAFFIC_SHARE`
+    * `global_hitrate = descriptor.hitrate_for_cache(current_disk_mb + effective_parent_mb)`
+    * `parent_hitrate = ((global_hitrate - edge_hitrate) / (100.0 - edge_hitrate)) * 100.0` with a 100% edge-hitrate safeguard.
+  * **Update (Outputs):** CSV and plots now include both `edge_hitrate_percent` and `parent_hitrate_percent`.
+
+### 6.1 Pairwise Hit-Rate Heatmap Script (The Glue Layer)
+* **New File:** `scripts/analyze_pairwise_hitrate_heatmaps.py`
+* **Purpose:** Analyze each `Client -> Edge -> Parent` route by directly sweeping cache hit rates instead of deriving them from footprint descriptors.
+* **Changes:**
+  * Loads all analyzable paths from `data/analyzable_paths.json` and iterates path-by-path.
+  * Reuses `SQLiteClient`, `MetroResolver`, and `PairwiseLatencyModel` orchestration patterns from the pairwise script.
+  * Sweeps an explicit 2D hit-rate grid for each path:
+    * `edge_hitrate_percentage`: 0 to 100 in 5% steps.
+    * `parent_hitrate_percentage`: 0 to 100 in 5% steps.
+  * Computes TTFB per grid cell via `PairwiseLatencyModel.get_ttfb_pdf(...)` and extracts p50/p95.
+  * Writes per-path outputs:
+    * `heatmap_p50_<client>_to_<edge>_via_<parent>.csv`
+    * `heatmap_p95_<client>_to_<edge>_via_<parent>.csv`
+    * `heatmap_<client>_to_<edge>_via_<parent>.png`
+  * Keeps fail-fast behavior by skipping paths on `MissingDataError`, `ValueError`, or `FileNotFoundError`.
 
 ### 7. Utility Scripts
 * **New File:** `scripts/discover_analyzable_paths.py`

@@ -2,7 +2,14 @@
 analyze_pairwise_paths.py
 
 Analyzes the physical latency path for Client -> Edge -> Parent routes.
-Evaluates how the cache disk size at the Edge impacts the TTFB p50 and p95.
+Evaluates how edge cache disk size impacts TTFB p50 and p95 using a 3-path model:
+1) Edge hit
+2) Parent hit (after edge miss)
+3) Parent miss (after edge miss)
+
+The script assumes perfect exclusion between edge and parent cache layers,
+derives parent hitrate from global-vs-edge hitrate, and records both edge and
+parent hitrates in CSV and plot outputs.
 
 This script acts as the "glue" layer, connecting data access, topology, and math models,
 and is the ONLY place where visualization (matplotlib) and CSV writing occur.
