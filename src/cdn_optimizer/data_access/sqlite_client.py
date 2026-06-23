@@ -97,18 +97,33 @@ class SQLiteClient:
         context = f"Midgress RTT (Edge: {child_metro} -> Parent: {parent_metro})"
         return self._fetch_pdf(query, (parent_metro, child_metro), context)
 
-    def get_parent_tat_pdf(self, metro_name: str) -> ProbabilityDensityFunction:
+    def get_parent_tat_pdf(self, metro_name: str, cache_hit_type: int | None = None) -> ProbabilityDensityFunction:
         """
         Fetch the processing TAT distribution at the parent MCH.
-        Excludes cache_hit_type 2 (ICP cache hits) as per legacy logic.
+
+        Args:
+            metro_name: The parent/edge metro for the parent TAT table query.
+            cache_hit_type: Optional cache-hit selector.
+                - `1`: parent hit only
+                - `0`: parent miss only
+                - `None`: legacy behavior (exclude type 2 ICP cache hits)
         """
+        if cache_hit_type is None:
+            query = f"""
+                SELECT * FROM netopt_perf_midgress_ecor_tat_ansabni
+                WHERE edge_metro = ? AND cache_hit_type != 2
+                AND pdate IN {self.default_dates}
+            """
+            context = f"Parent TAT (Parent assigned to Edge: {metro_name}, Hit Type != 2)"
+            return self._fetch_pdf(query, (metro_name,), context)
+
         query = f"""
             SELECT * FROM netopt_perf_midgress_ecor_tat_ansabni
-            WHERE edge_metro = ? AND cache_hit_type != 2
+            WHERE edge_metro = ? AND cache_hit_type = ?
             AND pdate IN {self.default_dates}
         """
-        context = f"Parent TAT (Parent assigned to Edge: {metro_name})"
-        return self._fetch_pdf(query, (metro_name,), context)
+        context = f"Parent TAT (Parent assigned to Edge: {metro_name}, Hit Type: {cache_hit_type})"
+        return self._fetch_pdf(query, (metro_name, cache_hit_type), context)
     
     def get_active_parent_for_edge(self, edge_metro_name: str) -> str:
         """

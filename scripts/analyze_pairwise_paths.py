@@ -24,6 +24,8 @@ from cdn_optimizer.models.latency_path import PairwiseLatencyModel
 # Constants for the sweep
 TB_IN_MB = 1024 * 1024
 DISK_STEP_TB = 100.0
+PARENT_DISK_TB = 1000.0
+EDGE_TRAFFIC_SHARE = 0.10
 
 
 def _slug(value: str) -> str:
@@ -52,14 +54,16 @@ def analyze_pairwise_path(
     edge_rtt_pdf = db_client.get_edge_rtt_pdf(edge_metro_name, client_id)
     edge_tat_pdf = db_client.get_edge_tat_pdf(edge_metro_name, cache_hit_type=1)
     midgress_rtt_pdf = db_client.get_midgress_rtt_pdf(parent_metro_name, edge_metro_name)
-    parent_tat_pdf = db_client.get_parent_tat_pdf(parent_metro_name)
+    parent_tat_hit_pdf = db_client.get_parent_tat_pdf(parent_metro_name, cache_hit_type=1)
+    parent_tat_miss_pdf = db_client.get_parent_tat_pdf(parent_metro_name, cache_hit_type=0)
 
     # 3. Initialize the Latency Physics Model
     latency_model = PairwiseLatencyModel(
         edge_rtt_pdf=edge_rtt_pdf,
         edge_tat_hit_pdf=edge_tat_pdf,
         midgress_rtt_pdf=midgress_rtt_pdf,
-        parent_tat_pdf=parent_tat_pdf,
+        parent_tat_hit_pdf=parent_tat_hit_pdf,
+        parent_tat_miss_pdf=parent_tat_miss_pdf,
     )
 
     # 4. Computation Sweep
@@ -73,11 +77,22 @@ def analyze_pairwise_path(
     print(f"Sweeping disk sizes from {min_disk_mb / TB_IN_MB:.1f} TB to {max_disk_mb / TB_IN_MB:.1f} TB...")
 
     while current_disk_mb <= max_disk_mb:
-        # Get hitrate for this specific disk size
-        hitrate_percent = descriptor.hitrate_for_cache(current_disk_mb)
+        # Under perfect exclusion, edge and parent caches contribute distinct hit mass.
+        edge_hitrate = descriptor.hitrate_for_cache(current_disk_mb)
+        effective_parent_mb = (PARENT_DISK_TB * TB_IN_MB) * EDGE_TRAFFIC_SHARE
+        global_hitrate = descriptor.hitrate_for_cache(current_disk_mb + effective_parent_mb)
+
+        if edge_hitrate >= 100.0:
+            parent_hitrate = 0.0
+        else:
+            parent_hitrate = ((global_hitrate - edge_hitrate) / (100.0 - edge_hitrate)) * 100.0
+            parent_hitrate = max(0.0, min(100.0, parent_hitrate))
         
-        # Get TTFB PDF mixture for this hitrate
-        ttfb_pdf = latency_model.get_ttfb_pdf(hitrate_percentage=hitrate_percent)
+        # Get TTFB PDF mixture for edge and parent hit rates.
+        ttfb_pdf = latency_model.get_ttfb_pdf(
+            edge_hitrate_percentage=edge_hitrate,
+            parent_hitrate_percentage=parent_hitrate,
+        )
         
         # Extract human-readable metrics (converted to milliseconds)
         micro_pdf = ttfb_pdf.to_microsecond_pdf(step_us=10)
@@ -87,7 +102,8 @@ def analyze_pairwise_path(
 
         results.append({
             "disk_tb": current_disk_mb / TB_IN_MB,
-            "hitrate_percent": hitrate_percent,
+            "edge_hitrate_percent": edge_hitrate,
+            "parent_hitrate_percent": parent_hitrate,
             "p50_ms": p50_ms,
             "p95_ms": p95_ms,
         })
@@ -99,24 +115,30 @@ def analyze_pairwise_path(
         f"pairwise_{_slug(client_metro_name)}_to_{_slug(edge_metro_name)}_via_{_slug(parent_metro_name)}.csv"
     )
     with open(csv_filename, mode='w', newline='') as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=["disk_tb", "hitrate_percent", "p50_ms", "p95_ms"])
+        writer = csv.DictWriter(
+            csv_file,
+            fieldnames=["disk_tb", "edge_hitrate_percent", "parent_hitrate_percent", "p50_ms", "p95_ms"],
+        )
         writer.writeheader()
         writer.writerows(results)
     print(f"Data saved to {csv_filename}")
 
     # 6. Output: Visualization
     disk_tb_vals = [r["disk_tb"] for r in results]
-    hitrate_vals = [r["hitrate_percent"] for r in results]
+    edge_hitrate_vals = [r["edge_hitrate_percent"] for r in results]
+    parent_hitrate_vals = [r["parent_hitrate_percent"] for r in results]
     p50_vals = [r["p50_ms"] for r in results]
     p95_vals = [r["p95_ms"] for r in results]
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
 
     # Plot 1: Disk vs Hitrate
-    ax1.plot(disk_tb_vals, hitrate_vals, color='blue', marker='.', linestyle='-')
+    ax1.plot(disk_tb_vals, edge_hitrate_vals, color='blue', marker='.', linestyle='-', label='Edge Hitrate')
+    ax1.plot(disk_tb_vals, parent_hitrate_vals, color='orange', marker='.', linestyle='-', label='Parent Hitrate')
     ax1.set_title(f"Cache Efficiency: {edge_metro_name}")
     ax1.set_xlabel("Provisioned Disk (TB)")
     ax1.set_ylabel("Hitrate (%)")
+    ax1.legend()
     ax1.grid(True, linestyle="--", alpha=0.6)
 
     # Plot 2: Disk vs Latency
@@ -146,7 +168,7 @@ def _parse_edge_key(edge_key: str) -> tuple[str, str]:
 def main():
     # 1. Configuration & Setup
     config = load_config()
-    output_dir = Path("latency_vs_cache_size_pairwise")
+    output_dir = Path(f"latency_vs_cache_size_pairwise_parent_{PARENT_DISK_TB:.0f}TB")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # 2. Topology & Data Access Clients

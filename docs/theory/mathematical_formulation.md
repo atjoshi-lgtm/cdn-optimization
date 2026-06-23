@@ -1,4 +1,4 @@
-# Mathematical Formulation of the Optimization Problem Implemented in `solve_for_US.py`
+# Mathematical Formulation of the Optimization Problem Implemented in `solve_for_US.py` (OUTDATED)
 
 This document states the optimization problem represented by the current implementation of `solve_for_US.py` and its directly used modules:
 

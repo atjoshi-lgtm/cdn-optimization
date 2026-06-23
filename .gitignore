@@ -231,3 +231,4 @@ SERVEDFROM_DATA/served_from.csv
 figures/*
 # **/*.txt
 data/
+cdn-optimization-experiments/**

@@ -22,20 +22,26 @@ class PairwiseLatencyModel:
         edge_rtt_pdf: ProbabilityDensityFunction,
         edge_tat_hit_pdf: ProbabilityDensityFunction,
         midgress_rtt_pdf: ProbabilityDensityFunction,
-        parent_tat_pdf: ProbabilityDensityFunction,
+        parent_tat_hit_pdf: ProbabilityDensityFunction,
+        parent_tat_miss_pdf: ProbabilityDensityFunction,
     ) -> None:
         """
-        Initialize the latency model with the four fundamental physical distributions.
+        Initialize the latency model with the five fundamental physical distributions.
         
         Args:
             edge_rtt_pdf: Network latency from Client to Edge.
             edge_tat_hit_pdf: Processing time at the Edge on a cache hit.
             midgress_rtt_pdf: Network latency from Edge to Parent on a cache miss.
-            parent_tat_pdf: Processing time at the Parent on a cache miss.
+            parent_tat_hit_pdf: Processing time at the Parent on a parent cache hit.
+            parent_tat_miss_pdf: Processing time at the Parent on a parent cache miss.
         """
         # Validate that no empty PDFs were passed
         if any(pdf.probability_series.empty for pdf in [
-            edge_rtt_pdf, edge_tat_hit_pdf, midgress_rtt_pdf, parent_tat_pdf
+            edge_rtt_pdf,
+            edge_tat_hit_pdf,
+            midgress_rtt_pdf,
+            parent_tat_hit_pdf,
+            parent_tat_miss_pdf,
         ]):
             raise ValueError(
                 "Cannot initialize PairwiseLatencyModel with empty probability distributions."
@@ -44,39 +50,62 @@ class PairwiseLatencyModel:
         self.edge_rtt = edge_rtt_pdf
         self.edge_tat = edge_tat_hit_pdf
         self.midgress_rtt = midgress_rtt_pdf
-        self.parent_tat = parent_tat_pdf
+        self.parent_tat_hit = parent_tat_hit_pdf
+        self.parent_tat_miss = parent_tat_miss_pdf
         self._conn = Convolution()
 
-    def get_ttfb_pdf(self, hitrate_percentage: float) -> ProbabilityDensityFunction:
+    def get_ttfb_pdf(
+        self,
+        edge_hitrate_percentage: float,
+        parent_hitrate_percentage: float,
+    ) -> ProbabilityDensityFunction:
         """
-        Calculate the expected TTFB distribution given a specific cache hit rate.
+        Calculate the expected TTFB distribution given edge and parent hit rates.
         
-        The TTFB is a finite mixture model of two distinct paths:
-        1. Pure Hit Path: Edge RTT + Edge TAT
-        2. Pure Miss Path: Edge RTT + Midgress RTT + Parent TAT
+        The TTFB is a finite mixture model of three distinct paths:
+        1. Edge Hit Path: Edge RTT + Edge Hit TAT
+        2. Parent Hit Path: Edge RTT + Midgress RTT + Parent Hit TAT
+        3. Parent Miss Path: Edge RTT + Midgress RTT + Parent Miss TAT
         
         Args:
-            hitrate_percentage: The cache hit rate (0.0 to 100.0).
+            edge_hitrate_percentage: The edge hit rate (0.0 to 100.0).
+            parent_hitrate_percentage: The parent hit rate conditioned on edge misses (0.0 to 100.0).
             
         Returns:
             A new ProbabilityDensityFunction representing the combined TTFB.
         """
-        if not 0.0 <= hitrate_percentage <= 100.0:
-            raise ValueError("Hit rate must be a percentage between 0 and 100.")
+        if not 0.0 <= edge_hitrate_percentage <= 100.0:
+            raise ValueError("Edge hit rate must be a percentage between 0 and 100.")
+        if not 0.0 <= parent_hitrate_percentage <= 100.0:
+            raise ValueError("Parent hit rate must be a percentage between 0 and 100.")
 
-        hit_fraction = hitrate_percentage / 100.0
-        miss_fraction = 1.0 - hit_fraction
+        edge_hit_fraction = edge_hitrate_percentage / 100.0
+        edge_miss_fraction = 1.0 - edge_hit_fraction
+        parent_hit_fraction = parent_hitrate_percentage / 100.0
+        parent_miss_fraction = 1.0 - parent_hit_fraction
 
-        # 1. Pure Hit Path: Client -> Edge -> Client
-        hit_path_pdf = self._conn.convolve(self.edge_rtt, self.edge_tat)
+        weight_edge_hit = edge_hit_fraction
+        weight_parent_hit = edge_miss_fraction * parent_hit_fraction
+        weight_parent_miss = edge_miss_fraction * parent_miss_fraction
 
-        # 2. Pure Miss Path: Client -> Edge -> Parent -> Edge -> Client
-        # First convolve the network legs, then add the parent processing time
+        total_weight = weight_edge_hit + weight_parent_hit + weight_parent_miss
+        if abs(total_weight - 1.0) > 1e-9:
+            raise ValueError("3-path mixture weights must sum to 1.0.")
+
+        # 1. Edge Hit Path: Client -> Edge -> Client
+        edge_hit_path_pdf = self._conn.convolve(self.edge_rtt, self.edge_tat)
+
+        # Build shared network leg once for parent paths.
         network_leg_pdf = self._conn.convolve(self.edge_rtt, self.midgress_rtt)
-        miss_path_pdf = self._conn.convolve(network_leg_pdf, self.parent_tat)
 
-        # 3. Mix the distributions based on the cache hit/miss probabilities
+        # 2. Parent Hit Path: Client -> Edge -> Parent(hit) -> Edge -> Client
+        parent_hit_path_pdf = self._conn.convolve(network_leg_pdf, self.parent_tat_hit)
+
+        # 3. Parent Miss Path: Client -> Edge -> Parent(miss) -> Edge -> Client
+        parent_miss_path_pdf = self._conn.convolve(network_leg_pdf, self.parent_tat_miss)
+
+        # 4. Mix the three path distributions based on edge/parent hit probabilities.
         return weighted_pdf_sum(
-            pdfs=[hit_path_pdf, miss_path_pdf],
-            weights=[hit_fraction, miss_fraction]
+            pdfs=[edge_hit_path_pdf, parent_hit_path_pdf, parent_miss_path_pdf],
+            weights=[weight_edge_hit, weight_parent_hit, weight_parent_miss],
         )
